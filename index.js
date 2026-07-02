@@ -15,7 +15,7 @@ app.use(cors({
     origin: [
         'http://localhost:3000',
         'http://127.0.0.1:3000',
-        'https://md-nur-a-alam-nur-ph-13-a10-dream-p.vercel.app'
+        'https://hero-b13-a09-client-bzxs.vercel.app'
     ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -469,6 +469,59 @@ const run = async () => {
             try {
                 const bookings = await bookingsCollection.find({ userEmail: req.decoded.email }).sort({ createdAt: -1 }).toArray();
                 res.send(bookings);
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Internal server error' });
+            }
+        });
+
+        // Cancel Booking (Private - user can only cancel their own)
+        app.delete('/api/bookings/:id', verifyToken, async (req, res) => {
+            try {
+                const id = req.params.id;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ success: false, message: 'Invalid booking ID format' });
+                }
+
+                const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+                if (!booking) {
+                    return res.status(404).send({ success: false, message: 'Booking not found' });
+                }
+
+                // Verify ownership
+                if (booking.userEmail !== req.decoded.email) {
+                    return res.status(403).send({ success: false, message: 'Access denied: You do not own this booking' });
+                }
+
+                await bookingsCollection.deleteOne({ _id: new ObjectId(id) });
+
+                // Decrement bookingCount for the car
+                if (booking.carId) {
+                    await carsCollection.updateOne(
+                        { _id: new ObjectId(booking.carId) },
+                        { $inc: { bookingCount: -1 } }
+                    );
+                }
+
+                res.send({ success: true, message: 'Booking cancelled successfully' });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: 'Internal server error' });
+            }
+        });
+
+        // ================= STATS ENDPOINT =================
+
+        // Get Platform Stats (Public)
+        app.get('/api/stats', async (req, res) => {
+            try {
+                const [totalCars, totalBookings, totalUsers] = await Promise.all([
+                    carsCollection.countDocuments(),
+                    bookingsCollection.countDocuments(),
+                    usersCollection.countDocuments()
+                ]);
+                res.send({ totalCars, totalBookings, totalUsers });
             } catch (error) {
                 console.error(error);
                 res.status(500).send({ message: 'Internal server error' });
