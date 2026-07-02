@@ -75,6 +75,47 @@ const run = async () => {
         const carsCollection = db.collection('cars');
         const bookingsCollection = db.collection('bookings');
 
+        // Middleware to verify Admin Role
+        const verifyAdmin = async (req, res, next) => {
+            try {
+                const email = req.decoded?.email;
+                if (!email) {
+                    return res.status(401).send({ message: 'unauthorized access' });
+                }
+                const user = await usersCollection.findOne({ email });
+                if (user && (user.role === 'admin' || user.email === 'mdnuraalamcse13@gmail.com')) {
+                    next();
+                } else {
+                    return res.status(403).send({ message: 'forbidden access: admin only' });
+                }
+            } catch (error) {
+                res.status(500).send({ message: 'Internal server error in admin verification' });
+            }
+        };
+
+        // Ensure Admin exists
+        const adminEmail = 'mdnuraalamcse13@gmail.com';
+        try {
+            const adminUser = await usersCollection.findOne({ email: adminEmail });
+            if (!adminUser) {
+                const hashedPassword = await bcrypt.hash('123456.Nur', 10);
+                await usersCollection.insertOne({
+                    name: 'System Admin',
+                    email: adminEmail,
+                    password: hashedPassword,
+                    photoUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&h=150&q=80',
+                    role: 'admin',
+                    createdAt: new Date()
+                });
+                console.log('Seeded admin user.');
+            } else if (adminUser.role !== 'admin') {
+                await usersCollection.updateOne({ email: adminEmail }, { $set: { role: 'admin' } });
+                console.log('Updated existing user to admin.');
+            }
+        } catch (err) {
+            console.error('Error seeding admin user:', err);
+        }
+
         // ================= AUTH ENDPOINTS =================
 
         // Register User
@@ -109,6 +150,7 @@ const run = async () => {
                     email,
                     photoUrl: photoUrl || '',
                     password: hashedPassword,
+                    role: email === 'mdnuraalamcse13@gmail.com' ? 'admin' : 'user',
                     createdAt: new Date()
                 };
 
@@ -148,7 +190,12 @@ const run = async () => {
                 res.cookie('token', token, cookieOptions);
                 res.send({ 
                     success: true, 
-                    user: { name: user.name, email: user.email, photoUrl: user.photoUrl } 
+                    user: { 
+                        name: user.name, 
+                        email: user.email, 
+                        photoUrl: user.photoUrl,
+                        role: user.role || (user.email === 'mdnuraalamcse13@gmail.com' ? 'admin' : 'user')
+                    } 
                 });
             } catch (error) {
                 console.error(error);
@@ -171,6 +218,7 @@ const run = async () => {
                         name: name || 'Google User',
                         email,
                         photoUrl: photoUrl || '',
+                        role: email === 'mdnuraalamcse13@gmail.com' ? 'admin' : 'user',
                         createdAt: new Date()
                     };
                     await usersCollection.insertOne(user);
@@ -185,7 +233,12 @@ const run = async () => {
                 res.cookie('token', token, cookieOptions);
                 res.send({ 
                     success: true, 
-                    user: { name: user.name, email: user.email, photoUrl: user.photoUrl } 
+                    user: { 
+                        name: user.name, 
+                        email: user.email, 
+                        photoUrl: user.photoUrl,
+                        role: user.role || (user.email === 'mdnuraalamcse13@gmail.com' ? 'admin' : 'user')
+                    } 
                 });
             } catch (error) {
                 console.error(error);
@@ -224,7 +277,8 @@ const run = async () => {
                     user: {
                         name: user.name,
                         email: user.email,
-                        photoUrl: user.photoUrl
+                        photoUrl: user.photoUrl,
+                        role: user.role || (user.email === 'mdnuraalamcse13@gmail.com' ? 'admin' : 'user')
                     }
                 });
             } catch (err) {
@@ -525,6 +579,246 @@ const run = async () => {
             } catch (error) {
                 console.error(error);
                 res.status(500).send({ message: 'Internal server error' });
+            }
+        });
+
+        // ================= PROFILE UPDATE =================
+
+        // Update Profile (Private)
+        app.put('/api/users/profile', verifyToken, async (req, res) => {
+            try {
+                const { name, photoUrl } = req.body;
+                if (!name) {
+                    return res.status(400).send({ success: false, message: 'Name is required' });
+                }
+
+                const email = req.decoded.email;
+                const result = await usersCollection.updateOne(
+                    { email },
+                    { $set: { name, photoUrl } }
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).send({ success: false, message: 'User not found' });
+                }
+
+                const updatedUser = await usersCollection.findOne({ email });
+
+                res.send({
+                    success: true,
+                    message: 'Profile updated successfully',
+                    user: {
+                        name: updatedUser.name,
+                        email: updatedUser.email,
+                        photoUrl: updatedUser.photoUrl,
+                        role: updatedUser.role || (updatedUser.email === 'mdnuraalamcse13@gmail.com' ? 'admin' : 'user')
+                    }
+                });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: 'Internal server error' });
+            }
+        });
+
+        // ================= USER DASHBOARD STATS =================
+
+        app.get('/api/users/dashboard-stats', verifyToken, async (req, res) => {
+            try {
+                const email = req.decoded.email;
+                const [myBookingsCount, myCarsCount] = await Promise.all([
+                    bookingsCollection.countDocuments({ userEmail: email }),
+                    carsCollection.countDocuments({ ownerEmail: email })
+                ]);
+
+                const spentResult = await bookingsCollection.aggregate([
+                    { $match: { userEmail: email } },
+                    { $group: { _id: null, total: { $sum: "$totalPrice" } } }
+                ]).toArray();
+                const totalSpent = spentResult[0]?.total || 0;
+
+                const recentBookings = await bookingsCollection.find({ userEmail: email })
+                    .sort({ createdAt: -1 })
+                    .limit(3)
+                    .toArray();
+
+                const recentCars = await carsCollection.find({ ownerEmail: email })
+                    .sort({ createdAt: -1 })
+                    .limit(3)
+                    .toArray();
+
+                res.send({
+                    myBookingsCount,
+                    myCarsCount,
+                    totalSpent,
+                    recentBookings,
+                    recentCars
+                });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Internal server error' });
+            }
+        });
+
+        // ================= ADMIN ENDPOINTS =================
+
+        // Get Admin Stats
+        app.get('/api/admin/stats', verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const [totalCars, totalBookings, totalUsers] = await Promise.all([
+                    carsCollection.countDocuments(),
+                    bookingsCollection.countDocuments(),
+                    usersCollection.countDocuments()
+                ]);
+
+                const revenueResult = await bookingsCollection.aggregate([
+                    { $group: { _id: null, total: { $sum: "$totalPrice" } } }
+                ]).toArray();
+                const totalRevenue = revenueResult[0]?.total || 0;
+
+                const recentBookings = await bookingsCollection.find()
+                    .sort({ createdAt: -1 })
+                    .limit(5)
+                    .toArray();
+
+                res.send({
+                    totalCars,
+                    totalBookings,
+                    totalUsers,
+                    totalRevenue,
+                    recentBookings
+                });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Internal server error' });
+            }
+        });
+
+        // Get All Users (Admin Only)
+        app.get('/api/admin/users', verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const users = await usersCollection.find({}, { projection: { password: 0 } }).sort({ createdAt: -1 }).toArray();
+                res.send(users);
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Internal server error' });
+            }
+        });
+
+        // Get All Bookings (Admin Only)
+        app.get('/api/admin/bookings', verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const bookings = await bookingsCollection.find().sort({ createdAt: -1 }).toArray();
+                res.send(bookings);
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Internal server error' });
+            }
+        });
+
+        // Update User Role (Admin Only)
+        app.put('/api/admin/users/:id/role', verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const id = req.params.id;
+                const { role } = req.body;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ success: false, message: 'Invalid user ID format' });
+                }
+                if (role !== 'admin' && role !== 'user') {
+                    return res.status(400).send({ success: false, message: 'Invalid role' });
+                }
+
+                const userToUpdate = await usersCollection.findOne({ _id: new ObjectId(id) });
+                if (!userToUpdate) {
+                    return res.status(404).send({ success: false, message: 'User not found' });
+                }
+
+                if (userToUpdate.email === 'mdnuraalamcse13@gmail.com') {
+                    return res.status(400).send({ success: false, message: 'Cannot change main admin role' });
+                }
+
+                await usersCollection.updateOne({ _id: new ObjectId(id) }, { $set: { role } });
+                res.send({ success: true, message: 'User role updated successfully' });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: 'Internal server error' });
+            }
+        });
+
+        // Delete User (Admin Only)
+        app.delete('/api/admin/users/:id', verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const id = req.params.id;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ success: false, message: 'Invalid user ID format' });
+                }
+
+                const userToDelete = await usersCollection.findOne({ _id: new ObjectId(id) });
+                if (!userToDelete) {
+                    return res.status(404).send({ success: false, message: 'User not found' });
+                }
+                if (userToDelete.email === 'mdnuraalamcse13@gmail.com') {
+                    return res.status(400).send({ success: false, message: 'Cannot delete the main admin account' });
+                }
+                if (userToDelete.email === req.decoded.email) {
+                    return res.status(400).send({ success: false, message: 'Cannot delete your own active admin account' });
+                }
+
+                await usersCollection.deleteOne({ _id: new ObjectId(id) });
+                res.send({ success: true, message: 'User deleted successfully' });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: 'Internal server error' });
+            }
+        });
+
+        // Cancel Booking (Admin Only)
+        app.delete('/api/admin/bookings/:id', verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const id = req.params.id;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ success: false, message: 'Invalid booking ID format' });
+                }
+
+                const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+                if (!booking) {
+                    return res.status(404).send({ success: false, message: 'Booking not found' });
+                }
+
+                await bookingsCollection.deleteOne({ _id: new ObjectId(id) });
+
+                // Decrement bookingCount for the car
+                if (booking.carId) {
+                    await carsCollection.updateOne(
+                        { _id: new ObjectId(booking.carId) },
+                        { $inc: { bookingCount: -1 } }
+                    );
+                }
+
+                res.send({ success: true, message: 'Booking cancelled successfully by admin' });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: 'Internal server error' });
+            }
+        });
+
+        // Delete Car listing (Admin Only)
+        app.delete('/api/admin/cars/:id', verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const id = req.params.id;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ success: false, message: 'Invalid car ID format' });
+                }
+
+                const car = await carsCollection.findOne({ _id: new ObjectId(id) });
+                if (!car) {
+                    return res.status(404).send({ success: false, message: 'Car listing not found' });
+                }
+
+                await carsCollection.deleteOne({ _id: new ObjectId(id) });
+                res.send({ success: true, message: 'Car listing deleted successfully by admin' });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: 'Internal server error' });
             }
         });
 
