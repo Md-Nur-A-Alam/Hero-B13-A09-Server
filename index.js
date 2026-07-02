@@ -64,36 +64,21 @@ const verifyToken = (req, res, next) => {
     });
 };
 
-const run = async () => {
-    try {
-        // Connect the client to the server
-        await client.connect();
+// Database collections (declared globally so route handlers can reference them)
+let usersCollection;
+let carsCollection;
+let bookingsCollection;
+
+// Establish database connection immediately and seed admin once connected
+const dbConnectPromise = client.connect()
+    .then(async () => {
         console.log("Connected to MongoDB successfully!");
-
         const db = client.db('ph-13-a09');
-        const usersCollection = db.collection('users');
-        const carsCollection = db.collection('cars');
-        const bookingsCollection = db.collection('bookings');
+        usersCollection = db.collection('users');
+        carsCollection = db.collection('cars');
+        bookingsCollection = db.collection('bookings');
 
-        // Middleware to verify Admin Role
-        const verifyAdmin = async (req, res, next) => {
-            try {
-                const email = req.decoded?.email;
-                if (!email) {
-                    return res.status(401).send({ message: 'unauthorized access' });
-                }
-                const user = await usersCollection.findOne({ email });
-                if (user && (user.role === 'admin' || user.email === 'mdnuraalamcse13@gmail.com')) {
-                    next();
-                } else {
-                    return res.status(403).send({ message: 'forbidden access: admin only' });
-                }
-            } catch (error) {
-                res.status(500).send({ message: 'Internal server error in admin verification' });
-            }
-        };
-
-        // Ensure Admin exists
+        // Seed Admin User
         const adminEmail = 'mdnuraalamcse13@gmail.com';
         try {
             const adminUser = await usersCollection.findOne({ email: adminEmail });
@@ -115,6 +100,44 @@ const run = async () => {
         } catch (err) {
             console.error('Error seeding admin user:', err);
         }
+    })
+    .catch(err => {
+        console.error("Error connecting to MongoDB:", err);
+    });
+
+// Middleware to block requests until database connection is established
+app.use(async (req, res, next) => {
+    try {
+        await dbConnectPromise;
+        if (!usersCollection || !carsCollection || !bookingsCollection) {
+            return res.status(500).send({ message: "Database connection failed or not ready" });
+        }
+        next();
+    } catch (err) {
+        console.error("Database connection check failed:", err);
+        res.status(500).send({ message: "Database connection failed" });
+    }
+});
+
+const run = () => {
+    try {
+        // Middleware to verify Admin Role
+        const verifyAdmin = async (req, res, next) => {
+            try {
+                const email = req.decoded?.email;
+                if (!email) {
+                    return res.status(401).send({ message: 'unauthorized access' });
+                }
+                const user = await usersCollection.findOne({ email });
+                if (user && (user.role === 'admin' || user.email === 'mdnuraalamcse13@gmail.com')) {
+                    next();
+                } else {
+                    return res.status(403).send({ message: 'forbidden access: admin only' });
+                }
+            } catch (error) {
+                res.status(500).send({ message: 'Internal server error in admin verification' });
+            }
+        };
 
         // ================= AUTH ENDPOINTS =================
 
@@ -826,7 +849,7 @@ const run = async () => {
         console.error("Error running server:", e);
     }
 }
-run().catch(console.dir);
+run();
 
 
 app.get('/', (req, res) => {
