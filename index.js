@@ -70,6 +70,7 @@ let carsCollection;
 let bookingsCollection;
 
 // Establish database connection immediately and seed admin once connected
+let dbConnectError = null;
 const dbConnectPromise = client.connect()
     .then(async () => {
         console.log("Connected to MongoDB successfully!");
@@ -102,6 +103,7 @@ const dbConnectPromise = client.connect()
         }
     })
     .catch(err => {
+        dbConnectError = err;
         console.error("Error connecting to MongoDB:", err);
     });
 
@@ -110,12 +112,17 @@ app.use(async (req, res, next) => {
     try {
         await dbConnectPromise;
         if (!usersCollection || !carsCollection || !bookingsCollection) {
-            return res.status(500).send({ message: "Database connection failed or not ready" });
+            return res.status(500).send({ 
+                success: false,
+                message: "Database connection failed or not ready",
+                error: dbConnectError ? dbConnectError.message : "Collections not initialized",
+                uriStatus: process.env.MONGODB_URI ? "MONGODB_URI is configured" : "MONGODB_URI is MISSING"
+            });
         }
         next();
     } catch (err) {
         console.error("Database connection check failed:", err);
-        res.status(500).send({ message: "Database connection failed" });
+        res.status(500).send({ success: false, message: "Database connection failed", error: err.message });
     }
 });
 
